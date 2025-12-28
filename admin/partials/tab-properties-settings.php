@@ -160,6 +160,34 @@ $hcrm_taxonomies = [
         <?php endforeach; ?>
     </div>
 
+    <!-- Custom Fields Mapping Section -->
+    <div class="hcrm-form-section">
+        <h2><?php esc_html_e( 'Custom Fields Mapping', 'hcrm-houzez' ); ?></h2>
+        <p class="hcrm-section-desc">
+            <?php esc_html_e( 'Map Houzez custom fields to CRM custom fields for bidirectional sync.', 'hcrm-houzez' ); ?>
+        </p>
+
+        <div class="hcrm-sync-row">
+            <div class="hcrm-sync-info">
+                <h4><?php esc_html_e( 'Configure Field Mapping', 'hcrm-houzez' ); ?></h4>
+                <p><?php esc_html_e( 'Define how custom fields from Houzez theme should map to CRM custom fields.', 'hcrm-houzez' ); ?></p>
+                <span class="hcrm-badge hcrm-badge-info" id="mapped-fields-count">
+                    <?php
+                    $mapped_count = HCRM_Custom_Fields_Mapper::get_mapped_count();
+                    /* translators: %d: number of mapped fields */
+                    printf( esc_html__( '%d fields mapped', 'hcrm-houzez' ), $mapped_count );
+                    ?>
+                </span>
+            </div>
+            <div class="hcrm-sync-actions">
+                <button type="button" class="button" id="open-custom-fields-mapping">
+                    <span class="dashicons dashicons-admin-generic"></span>
+                    <?php esc_html_e( 'Configure Mapping', 'hcrm-houzez' ); ?>
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Save Button -->
     <div class="hcrm-form-section">
         <div class="hcrm-form-actions">

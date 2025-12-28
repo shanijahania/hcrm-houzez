@@ -100,7 +100,7 @@ class HCRM_Sync_Manager {
      * @return bool
      */
     public function is_sync_enabled($entity_type) {
-        // Map entity types to their settings options
+        // Map entity types to their entity-specific settings options
         $option_map = [
             'properties'  => 'hcrm_properties_settings',
             'taxonomies'  => 'hcrm_taxonomy_settings',
@@ -108,10 +108,18 @@ class HCRM_Sync_Manager {
             'leads'       => 'hcrm_leads_settings',
         ];
 
-        $option_name = $option_map[$entity_type] ?? 'hcrm_sync_settings';
-        $settings = get_option($option_name, []);
+        // Check entity-specific settings first
+        $option_name = $option_map[$entity_type] ?? null;
+        if ($option_name) {
+            $settings = get_option($option_name, []);
+            if (!empty($settings["sync_{$entity_type}"])) {
+                return true;
+            }
+        }
 
-        return !empty($settings["sync_{$entity_type}"]);
+        // Also check global sync settings (hcrm_sync_settings tab)
+        $sync_settings = get_option('hcrm_sync_settings', []);
+        return !empty($sync_settings["sync_{$entity_type}"]);
     }
 
     /**
@@ -244,67 +252,71 @@ class HCRM_Sync_Manager {
     }
 
     /**
-     * Hook: Handle property save.
+     * Hook: Handle property save via save_post_property.
+     *
+     * This hook fires early (before Houzez saves all meta).
+     * For dashboard submissions, we skip here and let on_houzez_property_save handle it.
+     * This method handles admin panel edits where Houzez hooks don't fire.
      *
      * @param int     $post_id Post ID.
      * @param WP_Post $post    Post object.
      * @param bool    $update  Whether this is an update.
      */
     public function on_property_save($post_id, $post, $update) {
-        // Prevent recursive sync
-        if ($this->is_syncing) {
+        HCRM_Logger::info("=== on_property_save START for post_id: {$post_id} ===");
+
+        // Skip if this is a Houzez dashboard submission
+        // The Houzez hooks fire AFTER all meta is saved, so we defer to them
+        if ($this->is_houzez_dashboard_submission()) {
+            HCRM_Logger::info("BLOCKED: Houzez dashboard submission detected, deferring to houzez_after_property_* hooks");
             return;
         }
 
-        // Skip if processing a webhook (prevent infinite loop)
-        if (defined('HCRM_WEBHOOK_PROCESSING') && HCRM_WEBHOOK_PROCESSING) {
-            return;
-        }
-
-        // Check if auto-sync is enabled
-        if (!$this->is_sync_enabled('properties')) {
-            return;
-        }
-
-        // Skip autosaves and revisions
+        // Skip autosaves and revisions (hook-specific checks)
         if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) {
+            HCRM_Logger::info("BLOCKED: DOING_AUTOSAVE");
             return;
         }
         if (wp_is_post_revision($post_id)) {
+            HCRM_Logger::info("BLOCKED: is post revision");
             return;
         }
 
-        // Skip auto-draft and inherit statuses (sync all other statuses: draft, pending, publish, expired, trash)
+        // Skip auto-draft and inherit statuses
         if (in_array($post->post_status, ['auto-draft', 'inherit'], true)) {
+            HCRM_Logger::info("BLOCKED: post_status is {$post->post_status}");
             return;
         }
 
-        // Check if API is configured
-        if (!$this->get_api_client()->is_configured()) {
-            return;
+        // Trigger the common sync logic
+        $this->trigger_property_sync($post_id);
+    }
+
+    /**
+     * Check if the current request is a Houzez dashboard property submission.
+     *
+     * Houzez dashboard uses POST action values to identify submissions.
+     * We detect these to skip save_post_property and wait for houzez_after_property_* hooks.
+     *
+     * @return bool True if this is a Houzez dashboard submission.
+     */
+    private function is_houzez_dashboard_submission() {
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Just checking context, not processing
+        if (!isset($_POST['action'])) {
+            return false;
         }
 
-        // Check if data has changed
-        $current_hash = $this->get_property_sync()->calculate_sync_hash($post_id);
-        $stored_hash = $this->get_sync_hash($post_id, 'property');
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Just checking context, not processing
+        $action = sanitize_text_field(wp_unslash($_POST['action']));
 
-        if ($current_hash === $stored_hash) {
-            return; // No changes
-        }
+        // Houzez dashboard submission actions
+        $houzez_actions = [
+            'add_property',
+            'update_property',
+            'save_as_draft',
+        ];
 
-        // Mark as syncing
-        $this->is_syncing = true;
-
-        // Sync property
-        $response = $this->push_property($post_id);
-
-        // Update hash on success
-        if ($response->is_success()) {
-            $this->update_sync_hash($post_id, 'property', $current_hash);
-        }
-
-        // Reset flag
-        $this->is_syncing = false;
+        return in_array($action, $houzez_actions, true);
     }
 
     /**
@@ -338,6 +350,84 @@ class HCRM_Sync_Manager {
         if ($new_status === 'publish' && $old_status !== 'publish') {
             // Will be handled by on_property_save
         }
+    }
+
+    /**
+     * Hook: Handle Houzez dashboard property save.
+     *
+     * This hook fires AFTER all property meta (including images) is saved,
+     * making it the correct hook for syncing complete property data.
+     *
+     * @param int $property_id Property ID.
+     */
+    public function on_houzez_property_save($property_id) {
+        HCRM_Logger::info("=== on_houzez_property_save START for property_id: {$property_id} ===");
+
+        // Trigger the sync with complete property data
+        $this->trigger_property_sync($property_id);
+    }
+
+    /**
+     * Common method to trigger property sync to CRM.
+     *
+     * Used by both Houzez hooks and save_post_property hook.
+     *
+     * @param int $property_id Property ID.
+     * @return void
+     */
+    private function trigger_property_sync($property_id) {
+        // Prevent recursive sync
+        if ($this->is_syncing) {
+            HCRM_Logger::info("BLOCKED: is_syncing flag is true");
+            return;
+        }
+
+        // Skip if processing a webhook (prevent infinite loop)
+        if (defined('HCRM_WEBHOOK_PROCESSING') && HCRM_WEBHOOK_PROCESSING) {
+            HCRM_Logger::info("BLOCKED: HCRM_WEBHOOK_PROCESSING flag is defined");
+            return;
+        }
+
+        // Check if auto-sync is enabled
+        if (!$this->is_sync_enabled('properties')) {
+            $props_settings = get_option('hcrm_properties_settings', []);
+            $sync_settings = get_option('hcrm_sync_settings', []);
+            HCRM_Logger::info("BLOCKED: properties sync is disabled. hcrm_properties_settings[sync_properties]=" . var_export($props_settings['sync_properties'] ?? null, true) . ", hcrm_sync_settings[sync_properties]=" . var_export($sync_settings['sync_properties'] ?? null, true));
+            return;
+        }
+        HCRM_Logger::info("PASSED: properties sync is enabled");
+
+        // Check if API is configured
+        if (!$this->get_api_client()->is_configured()) {
+            HCRM_Logger::info("BLOCKED: API client not configured");
+            return;
+        }
+
+        // Check if data has changed
+        $current_hash = $this->get_property_sync()->calculate_sync_hash($property_id);
+        $stored_hash = $this->get_sync_hash($property_id, 'property');
+        HCRM_Logger::info("Hash check - Current: {$current_hash}, Stored: {$stored_hash}");
+
+        if ($current_hash === $stored_hash) {
+            HCRM_Logger::info("BLOCKED: hash unchanged, no sync needed");
+            return;
+        }
+
+        HCRM_Logger::info("All checks passed, proceeding with sync...");
+
+        // Mark as syncing
+        $this->is_syncing = true;
+
+        // Sync property
+        $response = $this->push_property($property_id);
+
+        // Update hash on success
+        if ($response->is_success()) {
+            $this->update_sync_hash($property_id, 'property', $current_hash);
+        }
+
+        // Reset flag
+        $this->is_syncing = false;
     }
 
     /**
@@ -518,6 +608,7 @@ class HCRM_Sync_Manager {
 
     /**
      * Store floor plan UUIDs from CRM response into WordPress meta.
+     * Uses title+size matching instead of index-based matching.
      *
      * @param int   $property_id WordPress property ID.
      * @param array $crm_floor_plans Floor plans from CRM response.
@@ -529,21 +620,59 @@ class HCRM_Sync_Manager {
             return;
         }
 
-        $updated = false;
-
-        // Match by index/order and store UUIDs
-        foreach ($crm_floor_plans as $index => $crm_plan) {
+        // Build a lookup for CRM plans by match key
+        $crm_by_match_key = [];
+        foreach ($crm_floor_plans as $crm_plan) {
             $uuid = $crm_plan['uuid'] ?? null;
-            if (!$uuid || !isset($wp_floor_plans[$index])) {
+            if (!$uuid) {
                 continue;
             }
 
-            // Store UUID in the floor plan data
-            if (empty($wp_floor_plans[$index]['crm_uuid'])) {
-                $wp_floor_plans[$index]['crm_uuid'] = $uuid;
+            $crm_size = isset($crm_plan['area_size']) ? (float) $crm_plan['area_size'] : 0.0;
+            $match_key = $this->generate_floor_plan_match_key(
+                $crm_plan['plan_title'] ?? '',
+                $crm_size
+            );
+            $crm_by_match_key[$match_key] = $uuid;
+        }
+
+        $updated = false;
+
+        // Match WP floor plans to CRM floor plans by title+size
+        foreach ($wp_floor_plans as $index => &$wp_plan) {
+            // Skip if already has a UUID
+            if (!empty($wp_plan['crm_uuid'])) {
+                continue;
+            }
+
+            // Extract numeric size from WP format (e.g., "670 Sqft" -> 670)
+            $size = null;
+            if (isset($wp_plan['fave_plan_size'])) {
+                preg_match('/[\d,.]+/', $wp_plan['fave_plan_size'], $matches);
+                if (!empty($matches[0])) {
+                    $size = (float) str_replace(',', '', $matches[0]);
+                }
+            }
+
+            $match_key = $this->generate_floor_plan_match_key(
+                $wp_plan['fave_plan_title'] ?? '',
+                $size
+            );
+
+            if (isset($crm_by_match_key[$match_key])) {
+                $wp_plan['crm_uuid'] = $crm_by_match_key[$match_key];
                 $updated = true;
+
+                HCRM_Logger::info(sprintf(
+                    'Matched floor plan by title+size for property %d: "%s" (size: %s) -> UUID: %s',
+                    $property_id,
+                    $wp_plan['fave_plan_title'] ?? '',
+                    $wp_plan['fave_plan_size'] ?? '',
+                    $crm_by_match_key[$match_key]
+                ));
             }
         }
+        unset($wp_plan); // Break reference
 
         // Update meta if changed
         if ($updated) {
@@ -552,79 +681,114 @@ class HCRM_Sync_Manager {
     }
 
     /**
+     * Generate a match key for floor plan deduplication.
+     * Uses title + size for fallback matching when UUID is not available.
+     *
+     * @param string|null $title Floor plan title.
+     * @param mixed       $size  Floor plan area size.
+     * @return string Match key.
+     */
+    private function generate_floor_plan_match_key($title, $size) {
+        $normalized_title = strtolower(trim($title ?? ''));
+        $normalized_size = is_numeric($size) ? (float) $size : 0.0;
+
+        return $normalized_title . '_' . $normalized_size;
+    }
+
+    /**
      * Sync images between WordPress and CRM.
      *
-     * 1. Store CRM UUIDs for existing WP attachments
-     * 2. Download new CRM images that don't exist locally
+     * Stores CRM UUIDs for images that were pushed to CRM.
+     * Uses wp_attachment_id for matching (sent in API request, returned in response).
      *
      * @param int   $property_id WordPress property ID.
      * @param array $crm_images  Images from CRM response.
      */
     private function sync_images( $property_id, $crm_images ) {
-        global $wpdb;
+        if ( empty( $crm_images ) || ! is_array( $crm_images ) ) {
+            return;
+        }
 
-        // Get all WP attachment IDs for this property (featured + gallery)
         $wp_attachment_ids = $this->get_property_attachment_ids( $property_id );
 
-        // Get all known CRM media UUIDs
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Media UUID lookup
-        $known_uuids = $wpdb->get_col(
-            $wpdb->prepare(
-                "SELECT crm_uuid FROM {$wpdb->prefix}hcrm_entity_map WHERE entity_type = %s",
-                'media'
-            )
-        );
+        HCRM_Logger::info( sprintf(
+            'sync_images: Property %d has %d WP attachments, CRM returned %d images',
+            $property_id,
+            count( $wp_attachment_ids ),
+            count( $crm_images )
+        ) );
 
-        // Track which CRM images we've matched to WP attachments
-        $matched_crm_uuids = [];
+        // Update _hcrm_crm_uuid meta for each image based on wp_attachment_id mapping
+        $updated_count = 0;
+        foreach ( $crm_images as $crm_image ) {
+            $crm_uuid = $crm_image['uuid'] ?? null;
+            $wp_attachment_id = $crm_image['wp_attachment_id'] ?? null;
 
-        // First pass: Match CRM images to WP attachments by order
-        foreach ($crm_images as $index => $crm_image) {
-            $uuid = $crm_image['uuid'] ?? null;
-            if (!$uuid) continue;
-
-            // Check if we already know this UUID
-            if (in_array($uuid, $known_uuids)) {
-                $matched_crm_uuids[] = $uuid;
+            if ( ! $crm_uuid ) {
                 continue;
             }
 
-            // Try to match by order/index to WP attachment
-            if (isset($wp_attachment_ids[$index])) {
-                $attachment_id = $wp_attachment_ids[$index];
+            // Strategy 1: Match by wp_attachment_id (for images pushed from WP to CRM)
+            if ( $wp_attachment_id && in_array( (int) $wp_attachment_id, $wp_attachment_ids, true ) ) {
+                $existing_uuid = get_post_meta( $wp_attachment_id, '_hcrm_crm_uuid', true );
+                if ( $existing_uuid !== $crm_uuid ) {
+                    update_post_meta( $wp_attachment_id, '_hcrm_crm_uuid', $crm_uuid );
+                    $updated_count++;
+                    HCRM_Logger::info( sprintf(
+                        'Updated CRM UUID for attachment %d: %s',
+                        $wp_attachment_id,
+                        $crm_uuid
+                    ) );
+                }
+                continue;
+            }
 
-                // Check if this attachment doesn't already have a UUID mapping
-                $existing_uuid = $this->get_crm_uuid($attachment_id, 'media');
-                if (!$existing_uuid) {
-                    $this->save_entity_map('media', $attachment_id, $uuid, 'push');
-                    $matched_crm_uuids[] = $uuid;
+            // Strategy 2: Match by name (fallback for legacy images)
+            $name = $crm_image['name'] ?? null;
+            if ( $name ) {
+                foreach ( $wp_attachment_ids as $attachment_id ) {
+                    $post_name = get_post_field( 'post_name', $attachment_id );
+                    if ( $post_name === $name ) {
+                        $existing_uuid = get_post_meta( $attachment_id, '_hcrm_crm_uuid', true );
+                        if ( $existing_uuid !== $crm_uuid ) {
+                            update_post_meta( $attachment_id, '_hcrm_crm_uuid', $crm_uuid );
+                            $updated_count++;
+                            HCRM_Logger::info( sprintf(
+                                'Updated CRM UUID for attachment %d (matched by name %s): %s',
+                                $attachment_id,
+                                $name,
+                                $crm_uuid
+                            ) );
+                        }
+                        break;
+                    }
                 }
             }
         }
 
-        // Second pass: Download CRM images that don't exist in WordPress
-        foreach ($crm_images as $crm_image) {
-            $uuid = $crm_image['uuid'] ?? null;
-            $url = $crm_image['url'] ?? null;
+        HCRM_Logger::info( sprintf(
+            'sync_images: Updated CRM UUID for %d images on property %d',
+            $updated_count,
+            $property_id
+        ) );
+    }
 
-            if (!$uuid || !$url) continue;
-
-            // Skip if we already have this image (matched or known)
-            if (in_array($uuid, $matched_crm_uuids) || in_array($uuid, $known_uuids)) {
-                continue;
-            }
-
-            // Download from CRM and create WP attachment
-            $attachment_id = $this->download_and_attach_image($url, $property_id);
-
-            if ($attachment_id) {
-                // Store the UUID mapping
-                $this->save_entity_map('media', $attachment_id, $uuid, 'pull');
-
-                // Add to property gallery
-                $this->add_image_to_property_gallery($property_id, $attachment_id);
-            }
-        }
+    /**
+     * Normalize URL for comparison.
+     *
+     * Removes protocol, query strings, and trailing slashes for reliable matching.
+     *
+     * @param string $url URL to normalize.
+     * @return string Normalized URL.
+     */
+    private function normalize_image_url( $url ) {
+        // Remove protocol (http:// or https://)
+        $url = preg_replace( '#^https?://#', '', $url );
+        // Remove query strings
+        $url = strtok( $url, '?' );
+        // Remove trailing slashes
+        $url = rtrim( $url, '/' );
+        return $url;
     }
 
     /**

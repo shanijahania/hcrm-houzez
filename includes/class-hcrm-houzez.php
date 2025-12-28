@@ -89,6 +89,7 @@ class HCRM_Houzez {
         require_once HCRM_PLUGIN_PATH . 'includes/sync/class-hcrm-sync-user.php';
         require_once HCRM_PLUGIN_PATH . 'includes/sync/class-hcrm-sync-taxonomy.php';
         require_once HCRM_PLUGIN_PATH . 'includes/sync/class-hcrm-sync-lead.php';
+        require_once HCRM_PLUGIN_PATH . 'includes/sync/class-hcrm-custom-fields-mapper.php';
 
         // Entity mapper
         require_once HCRM_PLUGIN_PATH . 'includes/class-hcrm-entity-mapper.php';
@@ -163,6 +164,12 @@ class HCRM_Houzez {
         // Logs handlers
         $this->loader->add_action('wp_ajax_hcrm_get_logs', $ajax, 'get_logs');
         $this->loader->add_action('wp_ajax_hcrm_clear_logs', $ajax, 'clear_logs');
+
+        // Custom fields mapping handlers
+        $this->loader->add_action('wp_ajax_hcrm_get_houzez_custom_fields', $ajax, 'get_houzez_custom_fields');
+        $this->loader->add_action('wp_ajax_hcrm_get_crm_custom_fields', $ajax, 'get_crm_custom_fields');
+        $this->loader->add_action('wp_ajax_hcrm_save_custom_fields_mapping', $ajax, 'save_custom_fields_mapping');
+        $this->loader->add_action('wp_ajax_hcrm_get_custom_fields_mapping', $ajax, 'get_custom_fields_mapping');
     }
 
     /**
@@ -183,8 +190,14 @@ class HCRM_Houzez {
     private function define_sync_hooks() {
         $sync_manager = HCRM_Sync_Manager::get_instance();
 
-        // Hook into property save for automatic sync
+        // Hook into property save for automatic sync (admin panel edits)
+        // Priority 20 to run after default WordPress processing
         $this->loader->add_action('save_post_property', $sync_manager, 'on_property_save', 20, 3);
+
+        // Hook into Houzez dashboard property saves (fires AFTER all meta is saved)
+        // These hooks ensure images and all meta data are synced correctly
+        $this->loader->add_action('houzez_after_property_submit', $sync_manager, 'on_houzez_property_save', 10, 1);
+        $this->loader->add_action('houzez_after_property_update', $sync_manager, 'on_houzez_property_save', 10, 1);
 
         // Hook into property trash
         $this->loader->add_action('wp_trash_post', $sync_manager, 'on_property_trash');

@@ -77,6 +77,13 @@
             // Clear stuck syncs button
             $(document).on('click', '#hcrm-clear-stuck-syncs', this.handleClearStuckSyncs.bind(this));
 
+            // Custom fields mapping
+            $(document).on('click', '#open-custom-fields-mapping', HCRM_CustomFieldsMapping.openModal.bind(HCRM_CustomFieldsMapping));
+            $(document).on('click', '#custom-fields-mapping-modal .hcrm-modal-close, #custom-fields-mapping-modal .hcrm-modal-cancel, #custom-fields-mapping-modal .hcrm-modal-overlay', HCRM_CustomFieldsMapping.closeModal.bind(HCRM_CustomFieldsMapping));
+            $(document).on('click', '#save-custom-fields-mapping', HCRM_CustomFieldsMapping.saveMapping.bind(HCRM_CustomFieldsMapping));
+            $(document).on('change', '.hcrm-crm-field-select', HCRM_CustomFieldsMapping.handleFieldChange.bind(HCRM_CustomFieldsMapping));
+            $(document).on('click', '.hcrm-clear-mapping', HCRM_CustomFieldsMapping.clearFieldMapping.bind(HCRM_CustomFieldsMapping));
+
         },
 
         /**
@@ -1208,5 +1215,313 @@
             }
         });
     };
+
+    /**
+     * Custom Fields Mapping Module
+     */
+    var HCRM_CustomFieldsMapping = {
+        houzezFields: [],
+        crmFields: [],
+        currentMapping: [],
+        isLoading: false,
+
+        /**
+         * Open the mapping modal
+         */
+        openModal: function(e) {
+            e.preventDefault();
+            $('#custom-fields-mapping-modal').show();
+            this.loadFields();
+        },
+
+        /**
+         * Close the mapping modal
+         */
+        closeModal: function(e) {
+            if (e) {
+                e.preventDefault();
+            }
+            $('#custom-fields-mapping-modal').hide();
+        },
+
+        /**
+         * Load fields from both Houzez and CRM
+         */
+        loadFields: function() {
+            var self = this;
+
+            if (this.isLoading) {
+                return;
+            }
+            this.isLoading = true;
+
+            // Show loading, hide other states
+            $('#mapping-loading').show();
+            $('#mapping-empty').hide();
+            $('#mapping-error').hide();
+            $('#mapping-table-wrapper').hide();
+
+            // Fetch all data in parallel
+            $.when(
+                this.fetchHouzezFields(),
+                this.fetchCrmFields(),
+                this.fetchCurrentMapping()
+            ).done(function(houzezRes, crmRes, mappingRes) {
+                self.isLoading = false;
+
+                // Process Houzez fields
+                if (houzezRes[0] && houzezRes[0].success) {
+                    self.houzezFields = houzezRes[0].data.fields || [];
+                } else {
+                    self.houzezFields = [];
+                }
+
+                // Process CRM fields
+                if (crmRes[0] && crmRes[0].success) {
+                    self.crmFields = crmRes[0].data.fields || [];
+                } else {
+                    self.crmFields = [];
+                    // Show error if CRM fields couldn't be loaded
+                    if (crmRes[0] && crmRes[0].data && crmRes[0].data.message) {
+                        $('#mapping-error-message').text(crmRes[0].data.message);
+                        $('#mapping-loading').hide();
+                        $('#mapping-error').show();
+                        return;
+                    }
+                }
+
+                // Process current mapping
+                if (mappingRes[0] && mappingRes[0].success) {
+                    self.currentMapping = mappingRes[0].data.mapping || [];
+                } else {
+                    self.currentMapping = [];
+                }
+
+                // Hide loading
+                $('#mapping-loading').hide();
+
+                // Check if we have Houzez fields
+                if (self.houzezFields.length === 0) {
+                    $('#mapping-empty').show();
+                    return;
+                }
+
+                // Render the table
+                self.renderTable();
+                $('#mapping-table-wrapper').show();
+
+            }).fail(function(error) {
+                self.isLoading = false;
+                $('#mapping-loading').hide();
+                $('#mapping-error-message').text('Failed to load custom fields. Please check your connection.');
+                $('#mapping-error').show();
+            });
+        },
+
+        /**
+         * Fetch Houzez custom fields
+         */
+        fetchHouzezFields: function() {
+            return $.ajax({
+                url: hcrm_admin.ajax_url,
+                type: 'POST',
+                data: {
+                    action: 'hcrm_get_houzez_custom_fields',
+                    nonce: hcrm_admin.nonce
+                }
+            });
+        },
+
+        /**
+         * Fetch CRM custom fields
+         */
+        fetchCrmFields: function() {
+            return $.ajax({
+                url: hcrm_admin.ajax_url,
+                type: 'POST',
+                data: {
+                    action: 'hcrm_get_crm_custom_fields',
+                    nonce: hcrm_admin.nonce
+                }
+            });
+        },
+
+        /**
+         * Fetch current mapping
+         */
+        fetchCurrentMapping: function() {
+            return $.ajax({
+                url: hcrm_admin.ajax_url,
+                type: 'POST',
+                data: {
+                    action: 'hcrm_get_custom_fields_mapping',
+                    nonce: hcrm_admin.nonce
+                }
+            });
+        },
+
+        /**
+         * Render the mapping table
+         */
+        renderTable: function() {
+            var self = this;
+            var $tbody = $('#mapping-rows');
+            $tbody.empty();
+
+            this.houzezFields.forEach(function(field) {
+                var mapped = self.currentMapping.find(function(m) {
+                    return m.houzez_field_id === field.field_id;
+                });
+
+                var row = self.createMappingRow(field, mapped);
+                $tbody.append(row);
+            });
+        },
+
+        /**
+         * Create a mapping row
+         */
+        createMappingRow: function(houzezField, mapped) {
+            var self = this;
+            var selectedSlug = mapped ? mapped.crm_slug : '';
+
+            // Build options HTML
+            var optionsHtml = '<option value="">-- Not Mapped --</option>';
+            this.crmFields.forEach(function(crmField) {
+                var selected = selectedSlug === crmField.slug ? 'selected' : '';
+                optionsHtml += '<option value="' + self.escapeHtml(crmField.slug) + '" ' + selected + '>' + self.escapeHtml(crmField.name) + ' (' + crmField.type + ')</option>';
+            });
+
+            var selectClass = selectedSlug ? 'hcrm-crm-field-select is-mapped' : 'hcrm-crm-field-select';
+
+            return '<tr data-houzez-field="' + this.escapeHtml(houzezField.field_id) + '">' +
+                '<td>' +
+                    '<div class="hcrm-mapping-field-info">' +
+                        '<span class="hcrm-mapping-field-label">' + this.escapeHtml(houzezField.label) + '</span>' +
+                        '<span class="hcrm-mapping-field-id">fave_' + this.escapeHtml(houzezField.field_id) + '</span>' +
+                        '<span class="hcrm-mapping-field-type">' + this.escapeHtml(houzezField.type) + '</span>' +
+                    '</div>' +
+                '</td>' +
+                '<td>' +
+                    '<select class="' + selectClass + '" data-houzez-field="' + this.escapeHtml(houzezField.field_id) + '">' +
+                        optionsHtml +
+                    '</select>' +
+                '</td>' +
+                '<td class="hcrm-mapping-actions-col">' +
+                    '<button type="button" class="hcrm-clear-mapping" title="Clear Mapping" data-houzez-field="' + this.escapeHtml(houzezField.field_id) + '">' +
+                        '<span class="dashicons dashicons-no"></span>' +
+                    '</button>' +
+                '</td>' +
+            '</tr>';
+        },
+
+        /**
+         * Handle field change
+         */
+        handleFieldChange: function(e) {
+            var $select = $(e.target);
+            var value = $select.val();
+
+            if (value) {
+                $select.addClass('is-mapped');
+            } else {
+                $select.removeClass('is-mapped');
+            }
+        },
+
+        /**
+         * Clear field mapping
+         */
+        clearFieldMapping: function(e) {
+            e.preventDefault();
+            var $btn = $(e.currentTarget);
+            var fieldId = $btn.data('houzez-field');
+            var $select = $('.hcrm-crm-field-select[data-houzez-field="' + fieldId + '"]');
+
+            $select.val('').removeClass('is-mapped');
+        },
+
+        /**
+         * Save the mapping
+         */
+        saveMapping: function(e) {
+            e.preventDefault();
+            var self = this;
+
+            var $btn = $('#save-custom-fields-mapping');
+            var originalHtml = $btn.html();
+            $btn.prop('disabled', true).html('<span class="dashicons dashicons-update hcrm-spin"></span> Saving...');
+
+            // Collect mapping data
+            var mapping = [];
+            $('#mapping-rows tr').each(function() {
+                var $row = $(this);
+                var houzezFieldId = $row.data('houzez-field');
+                var crmSlug = $row.find('.hcrm-crm-field-select').val();
+
+                if (crmSlug) {
+                    var houzezField = self.houzezFields.find(function(f) {
+                        return f.field_id === houzezFieldId;
+                    });
+                    var crmField = self.crmFields.find(function(f) {
+                        return f.slug === crmSlug;
+                    });
+
+                    mapping.push({
+                        houzez_field_id: houzezFieldId,
+                        houzez_label: houzezField ? houzezField.label : '',
+                        crm_slug: crmSlug,
+                        crm_label: crmField ? crmField.name : ''
+                    });
+                }
+            });
+
+            $.ajax({
+                url: hcrm_admin.ajax_url,
+                type: 'POST',
+                data: {
+                    action: 'hcrm_save_custom_fields_mapping',
+                    nonce: hcrm_admin.nonce,
+                    mapping: JSON.stringify(mapping)
+                },
+                success: function(response) {
+                    $btn.prop('disabled', false).html(originalHtml);
+
+                    if (response.success) {
+                        HCRM_Admin.showNotice('success', response.data.message);
+                        self.closeModal();
+                        self.updateMappedCount(response.data.count);
+                    } else {
+                        HCRM_Admin.showNotice('error', response.data.message || 'Failed to save mapping.');
+                    }
+                },
+                error: function() {
+                    $btn.prop('disabled', false).html(originalHtml);
+                    HCRM_Admin.showNotice('error', 'Failed to save mapping. Please try again.');
+                }
+            });
+        },
+
+        /**
+         * Update the mapped fields count badge
+         */
+        updateMappedCount: function(count) {
+            var text = count + ' field' + (count !== 1 ? 's' : '') + ' mapped';
+            $('#mapped-fields-count').text(text);
+        },
+
+        /**
+         * Escape HTML
+         */
+        escapeHtml: function(text) {
+            if (!text) return '';
+            var div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    };
+
+    // Expose for global access
+    window.HCRM_CustomFieldsMapping = HCRM_CustomFieldsMapping;
 
 })(jQuery);

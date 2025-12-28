@@ -1187,7 +1187,7 @@
 .hcrm-modal-content {
     position: relative;
     background: var(--hcrm-bg-white);
-    padding: 32px 40px;
+    padding: 20px;
     border-radius: var(--hcrm-radius-xl);
     box-shadow: var(--hcrm-shadow-lg);
     text-align: center;
@@ -1402,5 +1402,327 @@
 
     .hcrm-stat-number {
         font-size: 28px;
+    }
+}
+
+/* ========================================================================
+   Custom Fields Mapping Modal
+   ======================================================================== */
+
+/* Large Modal Variant */
+.hcrm-modal.hcrm-modal-large .hcrm-modal-content {
+    max-width: 750px;
+    width: 90%;
+}
+
+/* Modal Header */
+.hcrm-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--hcrm-gray-200);
+    border-radius: var(--hcrm-radius-lg) var(--hcrm-radius-lg) 0 0;
+}
+
+.hcrm-modal-header h3 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--hcrm-gray-800);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.hcrm-modal-header h3 .dashicons {
+    color: var(--hcrm-primary);
+}
+
+.hcrm-modal-close {
+    background: none;
+    border: none;
+    padding: 8px;
+    cursor: pointer;
+    color: var(--hcrm-gray-500);
+    border-radius: var(--hcrm-radius);
+    transition: var(--hcrm-transition);
+}
+
+.hcrm-modal-close:hover {
+    background: var(--hcrm-gray-100);
+    color: var(--hcrm-gray-700);
+}
+
+.hcrm-modal-close .dashicons {
+    font-size: 20px;
+    width: 20px;
+    height: 20px;
+}
+
+/* Modal Body */
+.hcrm-modal-body {
+    padding: 24px;
+    max-height: 60vh;
+    overflow-y: auto;
+}
+
+/* Modal Footer */
+.hcrm-modal-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+    padding: 16px 24px;
+    border-top: 1px solid var(--hcrm-gray-200);
+    border-radius: 0 0 var(--hcrm-radius-lg) var(--hcrm-radius-lg);
+}
+
+.hcrm-modal-footer .button .dashicons {
+    margin-right: 4px;
+}
+
+/* Loading State */
+.hcrm-mapping-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 48px 24px;
+    text-align: center;
+}
+
+.hcrm-mapping-loading .dashicons {
+    font-size: 32px;
+    width: 32px;
+    height: 32px;
+    color: var(--hcrm-primary);
+}
+
+.hcrm-mapping-loading p {
+    margin: 16px 0 0;
+    color: var(--hcrm-gray-600);
+}
+
+/* Empty State */
+.hcrm-mapping-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 48px 24px;
+    text-align: center;
+}
+
+.hcrm-mapping-empty .dashicons {
+    font-size: 48px;
+    width: 48px;
+    height: 48px;
+    color: var(--hcrm-gray-400);
+}
+
+.hcrm-mapping-empty p {
+    margin: 16px 0 0;
+    color: var(--hcrm-gray-600);
+    max-width: 400px;
+}
+
+/* Error State */
+.hcrm-mapping-error {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 48px 24px;
+    text-align: center;
+}
+
+.hcrm-mapping-error .dashicons {
+    font-size: 48px;
+    width: 48px;
+    height: 48px;
+    color: var(--hcrm-error);
+}
+
+.hcrm-mapping-error p {
+    margin: 16px 0 0;
+    color: var(--hcrm-gray-600);
+}
+
+/* Mapping Description */
+.hcrm-mapping-description {
+    margin: 0 0 20px;
+    padding: 12px 16px;
+    background: #f0f6fc;
+    border-left: 4px solid var(--hcrm-primary);
+    border-radius: 0 var(--hcrm-radius) var(--hcrm-radius) 0;
+    color: var(--hcrm-gray-700);
+    font-size: 13px;
+}
+
+/* Mapping Table */
+.hcrm-mapping-table-wrapper {
+    overflow-x: auto;
+}
+
+.hcrm-mapping-table {
+    width: 100%;
+    border-collapse: collapse;
+    border: 1px solid var(--hcrm-gray-200);
+    border-radius: var(--hcrm-radius);
+    overflow: hidden;
+}
+
+.hcrm-mapping-table th,
+.hcrm-mapping-table td {
+    padding: 14px 16px;
+    text-align: left;
+    border-bottom: 1px solid var(--hcrm-gray-200);
+}
+
+.hcrm-mapping-table th {
+    background: var(--hcrm-gray-50);
+    font-weight: 600;
+    color: var(--hcrm-gray-700);
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.hcrm-mapping-table tr:last-child td {
+    border-bottom: none;
+}
+
+.hcrm-mapping-table tr:hover td {
+    background: var(--hcrm-gray-50);
+}
+
+.hcrm-mapping-actions-col {
+    width: 60px;
+    text-align: center !important;
+}
+
+/* Mapping Row Field Info */
+.hcrm-mapping-field-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.hcrm-mapping-field-label {
+    font-weight: 500;
+    color: var(--hcrm-gray-800);
+}
+
+.hcrm-mapping-field-id {
+    font-size: 12px;
+    color: var(--hcrm-gray-500);
+    font-family: monospace;
+}
+
+.hcrm-mapping-field-type {
+    display: inline-block;
+    padding: 2px 8px;
+    font-size: 11px;
+    background: var(--hcrm-gray-100);
+    color: var(--hcrm-gray-600);
+    border-radius: var(--hcrm-radius);
+    text-transform: uppercase;
+}
+
+/* CRM Field Select */
+.hcrm-crm-field-select {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--hcrm-gray-300);
+    border-radius: var(--hcrm-radius);
+    font-size: 14px;
+    transition: var(--hcrm-transition);
+}
+
+.hcrm-crm-field-select:focus {
+    border-color: var(--hcrm-primary);
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(34, 113, 177, 0.15);
+}
+
+.hcrm-crm-field-select.is-mapped {
+    border-color: var(--hcrm-success);
+    background-color: rgba(0, 163, 42, 0.05);
+}
+
+/* Clear Mapping Button */
+.hcrm-clear-mapping {
+    background: none;
+    border: none;
+    padding: 6px;
+    cursor: pointer;
+    color: var(--hcrm-gray-400);
+    border-radius: var(--hcrm-radius);
+    transition: var(--hcrm-transition);
+}
+
+.hcrm-clear-mapping:hover {
+    background: var(--hcrm-gray-100);
+    color: var(--hcrm-error);
+}
+
+.hcrm-clear-mapping .dashicons {
+    font-size: 18px;
+    width: 18px;
+    height: 18px;
+}
+
+/* Badge Styles */
+.hcrm-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    border-radius: var(--hcrm-radius-full);
+}
+
+.hcrm-badge-info {
+    background: #e0f2fe;
+    color: #0369a1;
+}
+
+.hcrm-badge-success {
+    background: #dcfce7;
+    color: #15803d;
+}
+
+/* Responsive Styles for Modal */
+@media screen and (max-width: 782px) {
+    .hcrm-modal.hcrm-modal-large .hcrm-modal-content {
+        width: 95%;
+        max-width: none;
+        margin: 10px;
+    }
+
+    .hcrm-modal-body {
+        padding: 16px;
+        max-height: 50vh;
+    }
+
+    .hcrm-mapping-table th,
+    .hcrm-mapping-table td {
+        padding: 10px 12px;
+    }
+
+    .hcrm-mapping-table th:nth-child(3),
+    .hcrm-mapping-table td:nth-child(3) {
+        display: none;
+    }
+
+    .hcrm-modal-footer {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .hcrm-modal-footer .button {
+        width: 100%;
+        justify-content: center;
     }
 }

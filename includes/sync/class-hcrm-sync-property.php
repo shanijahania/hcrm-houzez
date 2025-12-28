@@ -112,6 +112,16 @@ class HCRM_Sync_Property {
             $data['custom_fields'][] = ['key' => 'virtual_tour', 'value' => $virtual_tour];
         }
 
+        // Add mapped custom fields from Houzez fields builder
+        $mapped_custom_fields = HCRM_Custom_Fields_Mapper::map_houzez_to_crm( $property_id );
+        if ( ! empty( $mapped_custom_fields ) ) {
+            if ( ! isset( $data['custom_fields'] ) ) {
+                $data['custom_fields'] = [];
+            }
+            // Merge mapped fields as { slug: value } format
+            $data['custom_fields'] = array_merge( $data['custom_fields'], $mapped_custom_fields );
+        }
+
         // Add owner_contact and created_by from post author
         $author = get_user_by('ID', $post->post_author);
         if ($author) {
@@ -217,6 +227,10 @@ class HCRM_Sync_Property {
     /**
      * Get property images formatted for API.
      *
+     * Includes:
+     * - crm_uuid: CRM media UUID (from _hcrm_crm_uuid meta) for matching existing images
+     * - wp_attachment_id: WordPress attachment ID for mapping new images back
+     *
      * @param int $property_id Property ID.
      * @return array Images data.
      */
@@ -229,11 +243,13 @@ class HCRM_Sync_Property {
             $url = wp_get_attachment_url($featured_id);
             // Only include if URL exists and is local
             if ($url && $this->is_local_image_url($url)) {
+                $crm_uuid = get_post_meta($featured_id, '_hcrm_crm_uuid', true);
                 $images[] = [
-                    'uuid'  => $this->get_crm_uuid_for_attachment($featured_id),
-                    'url'   => $url,
-                    'order' => 1,
-                    'name'  => get_the_title($featured_id),
+                    'url'              => $url,
+                    'order'            => 1,
+                    'name'             => get_post_field('post_name', $featured_id),
+                    'crm_uuid'         => $crm_uuid ?: null,
+                    'wp_attachment_id' => $featured_id,
                 ];
             }
         }
@@ -241,20 +257,21 @@ class HCRM_Sync_Property {
         // Get gallery images (Houzez stores as multiple meta entries with same key)
         $gallery = get_post_meta($property_id, 'fave_property_images', false);
         if (!empty($gallery)) {
-            $attachment_ids = $gallery;
             $order = count($images) + 1;
 
-            foreach ($attachment_ids as $attachment_id) {
+            foreach ($gallery as $attachment_id) {
                 $attachment_id = (int) trim($attachment_id);
                 if ($attachment_id && $attachment_id !== $featured_id) {
                     $url = wp_get_attachment_url($attachment_id);
                     // Only include if URL exists and is local
                     if ($url && $this->is_local_image_url($url)) {
+                        $crm_uuid = get_post_meta($attachment_id, '_hcrm_crm_uuid', true);
                         $images[] = [
-                            'uuid'  => $this->get_crm_uuid_for_attachment($attachment_id),
-                            'url'   => $url,
-                            'order' => $order++,
-                            'name'  => get_the_title($attachment_id),
+                            'url'              => $url,
+                            'order'            => $order++,
+                            'name'             => get_post_field('post_name', $attachment_id),
+                            'crm_uuid'         => $crm_uuid ?: null,
+                            'wp_attachment_id' => $attachment_id,
                         ];
                     }
                 }
@@ -267,19 +284,13 @@ class HCRM_Sync_Property {
     /**
      * Get CRM UUID for a WordPress attachment.
      *
+     * Uses the centralized get_crm_uuid() method for consistent query logic.
+     *
      * @param int $attachment_id Attachment ID.
      * @return string|null CRM media UUID or null.
      */
     private function get_crm_uuid_for_attachment($attachment_id) {
-        global $wpdb;
-
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Custom table lookup
-        return $wpdb->get_var(
-            $wpdb->prepare(
-                "SELECT crm_uuid FROM {$wpdb->prefix}hcrm_entity_map WHERE entity_type = 'media' AND wp_id = %d",
-                $attachment_id
-            )
-        );
+        return HCRM_Sync_Manager::get_instance()->get_crm_uuid($attachment_id, 'media');
     }
 
     /**
@@ -393,6 +404,21 @@ class HCRM_Sync_Property {
             }
         }
         return null;
+    }
+
+    /**
+     * Generate a match key for floor plan deduplication.
+     * Uses title + size for fallback matching when UUID is not available.
+     *
+     * @param string|null $title Floor plan title.
+     * @param mixed       $size  Floor plan area size.
+     * @return string Match key.
+     */
+    private function generate_floor_plan_match_key($title, $size) {
+        $normalized_title = strtolower(trim($title ?? ''));
+        $normalized_size = is_numeric($size) ? (float) $size : 0.0;
+
+        return $normalized_title . '_' . $normalized_size;
     }
 
     /**
@@ -562,102 +588,195 @@ class HCRM_Sync_Property {
             $this->sync_floor_plans_from_crm($property_id, $crm_data['floor_plans']);
         }
 
+        // Apply mapped custom fields from CRM
+        if ( ! empty( $crm_data['custom_fields'] ) && is_array( $crm_data['custom_fields'] ) ) {
+            $mapped_meta = HCRM_Custom_Fields_Mapper::map_crm_to_houzez( $crm_data['custom_fields'] );
+            foreach ( $mapped_meta as $meta_key => $meta_value ) {
+                update_post_meta( $property_id, $meta_key, $meta_value );
+            }
+        }
+
         return $property_id;
     }
 
     /**
      * Sync images from CRM to WordPress property.
      *
-     * This method handles complete image synchronization:
+     * Uses UUID-based matching (CRM media UUID) as primary strategy:
+     * - Primary: Match by CRM UUID (_hcrm_crm_uuid meta = image.uuid from webhook)
+     * - Fallback: Match by name for legacy images without UUID
      * - Downloads new images that don't exist locally
-     * - Removes images that are no longer in the CRM
-     * - Updates gallery order and featured image
+     * - Deletes images that originated from CRM but are no longer in the list
      *
      * @param int   $property_id Property ID.
-     * @param array $images      Array of image data with 'url', 'order', 'is_featured'.
+     * @param array $images      Array of image data with 'uuid', 'url', 'name'.
      */
     private function sync_images_from_crm($property_id, $images) {
-        // Handle empty images - remove all existing images
         if (empty($images) || !is_array($images)) {
-            $this->clear_property_images($property_id);
+            HCRM_Logger::info("sync_images_from_crm: Empty images array for property {$property_id}, skipping");
             return;
         }
 
-        // Get current attachments with their source URLs
-        $current_attachments = $this->get_property_attachments_with_sources($property_id);
+        // Build lookup by CRM UUID
+        $existing_by_uuid = [];
+        $existing_by_name = [];
+        $all_wp_attachment_ids = [];
 
-        // Build array of new image URLs
-        $new_urls = array_column($images, 'url');
+        // Get all property attachments
+        $featured_id = get_post_thumbnail_id($property_id);
+        if ($featured_id) {
+            $all_wp_attachment_ids[] = $featured_id;
+            $crm_uuid = get_post_meta($featured_id, '_hcrm_crm_uuid', true);
+            $post_name = get_post_field('post_name', $featured_id);
+            $crm_name = get_post_meta($featured_id, '_hcrm_crm_name', true);
 
-        // Find attachments to remove (exist locally but not in new list)
-        $urls_to_keep = [];
-        foreach ($current_attachments as $attachment_id => $source_url) {
-            if (!in_array($source_url, $new_urls, true)) {
-                // This image was removed from CRM - delete it
-                wp_delete_attachment($attachment_id, true);
-                HCRM_Logger::info(sprintf(
-                    'Deleted removed image attachment %d for property %d',
-                    $attachment_id,
-                    $property_id
-                ));
-            } else {
-                $urls_to_keep[$source_url] = $attachment_id;
+            if ($crm_uuid) {
+                $existing_by_uuid[$crm_uuid] = $featured_id;
+            }
+            if ($post_name) {
+                $existing_by_name[$post_name] = $featured_id;
+            }
+            if ($crm_name) {
+                $existing_by_name[$crm_name] = $featured_id;
             }
         }
 
-        // Clear existing gallery meta (will rebuild)
-        delete_post_meta($property_id, 'fave_property_images');
-        delete_post_thumbnail($property_id);
+        $gallery = get_post_meta($property_id, 'fave_property_images', false);
+        foreach ($gallery as $attachment_id) {
+            if ($attachment_id) {
+                $all_wp_attachment_ids[] = (int) $attachment_id;
+                $crm_uuid = get_post_meta($attachment_id, '_hcrm_crm_uuid', true);
+                $post_name = get_post_field('post_name', $attachment_id);
+                $crm_name = get_post_meta($attachment_id, '_hcrm_crm_name', true);
 
-        // Sort images by order
-        usort($images, function($a, $b) {
-            return ($a['order'] ?? 0) - ($b['order'] ?? 0);
-        });
+                if ($crm_uuid) {
+                    $existing_by_uuid[$crm_uuid] = (int) $attachment_id;
+                }
+                if ($post_name) {
+                    $existing_by_name[$post_name] = (int) $attachment_id;
+                }
+                if ($crm_name) {
+                    $existing_by_name[$crm_name] = (int) $attachment_id;
+                }
+            }
+        }
 
-        $gallery_ids = [];
-        $featured_set = false;
-
+        // Get all incoming CRM image UUIDs
+        $incoming_uuids = [];
         foreach ($images as $image) {
-            $url = $image['url'] ?? '';
-            if (empty($url)) {
-                HCRM_Logger::warning(sprintf('Empty URL in image data for property %d: %s', $property_id, wp_json_encode($image)));
-                continue;
+            $uuid = $image['uuid'] ?? null;
+            if ($uuid) {
+                $incoming_uuids[] = $uuid;
             }
-
-            // Log the URL being processed
-            HCRM_Logger::info(sprintf('Processing image URL for property %d: %s', $property_id, $url));
-
-            // Check if we already have this image
-            $attachment_id = $urls_to_keep[$url] ?? $this->get_attachment_by_url($url);
-
-            if (!$attachment_id) {
-                // Download and create attachment
-                $attachment_id = $this->sideload_image($url, $property_id);
-            }
-
-            if (!$attachment_id || is_wp_error($attachment_id)) {
-                HCRM_Logger::warning(sprintf(
-                    'Failed to sideload image for property %d: %s',
-                    $property_id,
-                    is_wp_error($attachment_id) ? $attachment_id->get_error_message() : 'Unknown error'
-                ));
-                continue;
-            }
-
-            // Set featured image (first one or one marked as featured)
-            if (!$featured_set && (!empty($image['is_featured']) || count($gallery_ids) === 0)) {
-                set_post_thumbnail($property_id, $attachment_id);
-                $featured_set = true;
-            }
-
-            // Add to gallery
-            $gallery_ids[] = $attachment_id;
-            add_post_meta($property_id, 'fave_property_images', $attachment_id);
         }
 
         HCRM_Logger::info(sprintf(
-            'Synced %d images for property %d',
-            count($gallery_ids),
+            'sync_images_from_crm: WP has %d images by UUID: %s | CRM sending %d images with UUIDs: %s',
+            count($existing_by_uuid),
+            wp_json_encode(array_keys($existing_by_uuid)),
+            count($images),
+            wp_json_encode($incoming_uuids)
+        ));
+
+        // STEP 1: DELETE WP images that are no longer in CRM (by UUID)
+        foreach ($all_wp_attachment_ids as $attachment_id) {
+            $crm_uuid = get_post_meta($attachment_id, '_hcrm_crm_uuid', true);
+
+            // Only consider images that have a CRM UUID (synced from CRM)
+            if (!$crm_uuid) {
+                continue; // No UUID = either WP-native or legacy image, don't delete by UUID
+            }
+
+            // Check if this image is still in CRM's list (by UUID)
+            if (!in_array($crm_uuid, $incoming_uuids, true)) {
+                HCRM_Logger::info(sprintf(
+                    'Deleting image no longer in CRM: attachment_id=%d, crm_uuid=%s',
+                    $attachment_id,
+                    $crm_uuid
+                ));
+
+                // Remove from gallery meta
+                delete_post_meta($property_id, 'fave_property_images', $attachment_id);
+
+                // Remove featured image if it matches
+                if ((int) get_post_thumbnail_id($property_id) === (int) $attachment_id) {
+                    delete_post_thumbnail($property_id);
+                }
+
+                // Delete the attachment
+                wp_delete_attachment($attachment_id, true);
+            }
+        }
+
+        // STEP 2: ADD new images from CRM (skip existing by UUID)
+        foreach ($images as $image) {
+            $url = $image['url'] ?? '';
+            $uuid = $image['uuid'] ?? null;
+            $name = $image['name'] ?? null;
+            $wp_attachment_id = $image['wp_attachment_id'] ?? null;
+
+            if (empty($url)) {
+                continue;
+            }
+
+            // Strategy 1: Match by UUID (primary)
+            if ($uuid && isset($existing_by_uuid[$uuid])) {
+                HCRM_Logger::info(sprintf('Image exists by UUID: %s', $uuid));
+                continue;
+            }
+
+            // Strategy 2: Match by name (fallback for legacy images without UUID)
+            if (!$uuid && $name && isset($existing_by_name[$name])) {
+                // Found by name - update with UUID for future matching
+                $attachment_id = $existing_by_name[$name];
+                if ($uuid) {
+                    update_post_meta($attachment_id, '_hcrm_crm_uuid', $uuid);
+                }
+                HCRM_Logger::info(sprintf('Image exists by name: %s (legacy)', $name));
+                continue;
+            }
+
+            // Strategy 3: Match by wp_attachment_id (for images synced from WP→CRM)
+            if ($wp_attachment_id && in_array((int) $wp_attachment_id, $all_wp_attachment_ids, true)) {
+                // Found by original WP ID - store UUID for future matching
+                if ($uuid) {
+                    update_post_meta($wp_attachment_id, '_hcrm_crm_uuid', $uuid);
+                }
+                HCRM_Logger::info(sprintf('Image matched by wp_attachment_id: %d, stored UUID: %s', $wp_attachment_id, $uuid ?: 'none'));
+                continue;
+            }
+
+            // New image from CRM - download it
+            HCRM_Logger::info(sprintf('Downloading new image: %s (uuid: %s, name: %s)', $url, $uuid ?: 'none', $name ?: 'none'));
+            $attachment_id = $this->sideload_image($url, $property_id);
+
+            if ($attachment_id && !is_wp_error($attachment_id)) {
+                // Store CRM UUID for future matching
+                if ($uuid) {
+                    update_post_meta($attachment_id, '_hcrm_crm_uuid', $uuid);
+                }
+
+                // Store source URL
+                update_post_meta($attachment_id, '_hcrm_source_url', $url);
+
+                // Store CRM's name field for legacy compatibility
+                if ($name) {
+                    update_post_meta($attachment_id, '_hcrm_crm_name', $name);
+                }
+
+                add_post_meta($property_id, 'fave_property_images', $attachment_id);
+                HCRM_Logger::info(sprintf('Image downloaded and attached: %d (crm_uuid: %s)', $attachment_id, $uuid ?: 'none'));
+            } else {
+                HCRM_Logger::warning(sprintf(
+                    'Failed to sideload image: %s',
+                    is_wp_error($attachment_id) ? $attachment_id->get_error_message() : 'Unknown error'
+                ));
+            }
+        }
+
+        HCRM_Logger::info(sprintf(
+            'sync_images_from_crm: Processed %d images for property %d',
+            count($images),
             $property_id
         ));
     }
@@ -692,6 +811,74 @@ class HCRM_Sync_Property {
         }
 
         return $attachments;
+    }
+
+    /**
+     * Get existing images for property indexed by normalized URL.
+     *
+     * Builds a lookup table of all images attached to a property,
+     * indexed by both their WordPress URL and CRM source URL (if any).
+     *
+     * @param int $property_id Property ID.
+     * @return array Associative array of normalized_url => attachment_id.
+     */
+    private function get_existing_images_by_url($property_id) {
+        $result = [];
+
+        // Get featured image
+        $featured_id = get_post_thumbnail_id($property_id);
+        if ($featured_id) {
+            // Add WordPress URL
+            $url = wp_get_attachment_url($featured_id);
+            if ($url) {
+                $result[$this->normalize_image_url($url)] = $featured_id;
+            }
+            // Add CRM source URL if exists
+            $source = get_post_meta($featured_id, '_hcrm_source_url', true);
+            if ($source) {
+                $result[$this->normalize_image_url($source)] = $featured_id;
+            }
+        }
+
+        // Get gallery images
+        $gallery = get_post_meta($property_id, 'fave_property_images', false);
+        if (!empty($gallery)) {
+            foreach ($gallery as $attachment_id) {
+                if (!$attachment_id) {
+                    continue;
+                }
+                // Add WordPress URL
+                $url = wp_get_attachment_url($attachment_id);
+                if ($url) {
+                    $result[$this->normalize_image_url($url)] = (int) $attachment_id;
+                }
+                // Add CRM source URL if exists
+                $source = get_post_meta($attachment_id, '_hcrm_source_url', true);
+                if ($source) {
+                    $result[$this->normalize_image_url($source)] = (int) $attachment_id;
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Normalize URL for comparison.
+     *
+     * Removes protocol, query strings, and trailing slashes for reliable matching.
+     *
+     * @param string $url URL to normalize.
+     * @return string Normalized URL.
+     */
+    private function normalize_image_url($url) {
+        // Remove protocol (http:// or https://)
+        $url = preg_replace('#^https?://#', '', $url);
+        // Remove query strings
+        $url = strtok($url, '?');
+        // Remove trailing slashes
+        $url = rtrim($url, '/');
+        return $url;
     }
 
     /**
@@ -859,6 +1046,7 @@ class HCRM_Sync_Property {
 
     /**
      * Sync floor plans from CRM to WordPress property.
+     * Preserves existing crm_uuid values and uses title+size matching as fallback.
      *
      * @param int   $property_id Property ID.
      * @param array $floor_plans Array of floor plan data from CRM.
@@ -874,10 +1062,57 @@ class HCRM_Sync_Property {
             return;
         }
 
+        // Get existing floor plans from WordPress to preserve crm_uuid values
+        $existing_plans = get_post_meta($property_id, 'floor_plans', true);
+        $existing_plans = is_array($existing_plans) ? $existing_plans : [];
+
+        // Build lookup maps for existing plans
+        $existing_by_uuid = [];
+        $existing_by_match_key = [];
+
+        foreach ($existing_plans as $index => $plan) {
+            // Index by UUID if available
+            if (!empty($plan['crm_uuid'])) {
+                $existing_by_uuid[$plan['crm_uuid']] = $index;
+            }
+
+            // Also index by match key (title + size)
+            $size = $this->extract_numeric($plan['fave_plan_size'] ?? '');
+            $match_key = $this->generate_floor_plan_match_key(
+                $plan['fave_plan_title'] ?? '',
+                $size
+            );
+            $existing_by_match_key[$match_key] = $index;
+        }
+
         $wp_floor_plans = [];
+        $preserved_uuids = 0;
 
         foreach ($floor_plans as $fp) {
             $image_url = '';
+            $preserved_uuid = null;
+
+            // Strategy 1: Match by UUID from CRM data
+            if (!empty($fp['uuid']) && isset($existing_by_uuid[$fp['uuid']])) {
+                $preserved_uuid = $fp['uuid'];
+            } else {
+                // Strategy 2: Match by title+size
+                $incoming_size = $this->extract_numeric($fp['area_size'] ?? null);
+                $incoming_match_key = $this->generate_floor_plan_match_key(
+                    $fp['plan_title'] ?? '',
+                    $incoming_size
+                );
+
+                if (isset($existing_by_match_key[$incoming_match_key])) {
+                    $existing_index = $existing_by_match_key[$incoming_match_key];
+                    // Preserve the existing crm_uuid if it was set
+                    $preserved_uuid = $existing_plans[$existing_index]['crm_uuid'] ?? ($fp['uuid'] ?? '');
+                    $preserved_uuids++;
+                } else {
+                    // New floor plan - use UUID from CRM if available
+                    $preserved_uuid = $fp['uuid'] ?? '';
+                }
+            }
 
             // Download floor plan image if provided
             if (!empty($fp['image_url'])) {
@@ -909,7 +1144,7 @@ class HCRM_Sync_Property {
                 'fave_plan_price'         => $fp['price'] ?? '',
                 'fave_plan_price_postfix' => $fp['price_postfix'] ?? '',
                 'fave_plan_image'         => $image_url,
-                'crm_uuid'                => $fp['uuid'] ?? '',
+                'crm_uuid'                => $preserved_uuid,
             ];
         }
 
@@ -924,9 +1159,10 @@ class HCRM_Sync_Property {
         }
 
         HCRM_Logger::info(sprintf(
-            'Synced %d floor plans for property %d',
+            'Synced %d floor plans for property %d (preserved %d UUIDs via title+size matching)',
             count($wp_floor_plans),
-            $property_id
+            $property_id,
+            $preserved_uuids
         ));
     }
 

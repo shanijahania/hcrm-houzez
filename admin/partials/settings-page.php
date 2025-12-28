@@ -113,3 +113,66 @@ $hcrm_api_base_url        = $hcrm_api_settings['api_base_url'] ?? '';
         <p class="hcrm-progress-text"><?php esc_html_e('Please wait while we sync your data...', 'hcrm-houzez'); ?></p>
     </div>
 </div>
+
+<!-- Custom Fields Mapping Modal -->
+<div id="custom-fields-mapping-modal" class="hcrm-modal hcrm-modal-large" style="display: none;">
+    <div class="hcrm-modal-overlay"></div>
+    <div class="hcrm-modal-content">
+        <div class="hcrm-modal-header">
+            <h3>
+                <span class="dashicons dashicons-admin-generic"></span>
+                <?php esc_html_e( 'Custom Fields Mapping', 'hcrm-houzez' ); ?>
+            </h3>
+            <button type="button" class="hcrm-modal-close" aria-label="<?php esc_attr_e( 'Close', 'hcrm-houzez' ); ?>">
+                <span class="dashicons dashicons-no-alt"></span>
+            </button>
+        </div>
+        <div class="hcrm-modal-body">
+            <!-- Loading State -->
+            <div class="hcrm-mapping-loading" id="mapping-loading">
+                <span class="dashicons dashicons-update hcrm-spin"></span>
+                <p><?php esc_html_e( 'Loading custom fields...', 'hcrm-houzez' ); ?></p>
+            </div>
+
+            <!-- Empty State -->
+            <div class="hcrm-mapping-empty" id="mapping-empty" style="display: none;">
+                <span class="dashicons dashicons-info-outline"></span>
+                <p><?php esc_html_e( 'No Houzez custom fields found. Add custom fields in Houzez > Custom Fields Builder first.', 'hcrm-houzez' ); ?></p>
+            </div>
+
+            <!-- Error State -->
+            <div class="hcrm-mapping-error" id="mapping-error" style="display: none;">
+                <span class="dashicons dashicons-warning"></span>
+                <p id="mapping-error-message"><?php esc_html_e( 'Failed to load custom fields.', 'hcrm-houzez' ); ?></p>
+            </div>
+
+            <!-- Mapping Table -->
+            <div class="hcrm-mapping-table-wrapper" id="mapping-table-wrapper" style="display: none;">
+                <p class="hcrm-mapping-description">
+                    <?php esc_html_e( 'Map each Houzez custom field to the corresponding CRM custom field. Fields that are not mapped will not be synced.', 'hcrm-houzez' ); ?>
+                </p>
+                <table class="hcrm-mapping-table" id="mapping-table">
+                    <thead>
+                        <tr>
+                            <th><?php esc_html_e( 'Houzez Field', 'hcrm-houzez' ); ?></th>
+                            <th><?php esc_html_e( 'CRM Field', 'hcrm-houzez' ); ?></th>
+                            <th class="hcrm-mapping-actions-col"><?php esc_html_e( 'Actions', 'hcrm-houzez' ); ?></th>
+                        </tr>
+                    </thead>
+                    <tbody id="mapping-rows">
+                        <!-- Dynamic rows will be inserted here -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="hcrm-modal-footer">
+            <button type="button" class="button hcrm-modal-cancel">
+                <?php esc_html_e( 'Cancel', 'hcrm-houzez' ); ?>
+            </button>
+            <button type="button" class="button button-primary" id="save-custom-fields-mapping">
+                <span class="dashicons dashicons-saved"></span>
+                <?php esc_html_e( 'Save Mapping', 'hcrm-houzez' ); ?>
+            </button>
+        </div>
+    </div>
+</div>

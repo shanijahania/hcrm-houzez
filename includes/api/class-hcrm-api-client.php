@@ -812,6 +812,20 @@ class HCRM_API_Client {
         return $this->delete("/leads/{$uuid}");
     }
 
+    // =========================================================================
+    // CUSTOM FIELDS METHODS
+    // =========================================================================
+
+    /**
+     * Get custom fields from the CRM for a specific entity type.
+     *
+     * @param string $entity_type Entity type (e.g., 'listing').
+     * @return HCRM_API_Response
+     */
+    public function get_custom_fields( $entity_type = 'listing' ) {
+        return $this->get( '/custom-fields', [ 'entity_type' => $entity_type ] );
+    }
+
     /**
      * Set the request timeout.
      *

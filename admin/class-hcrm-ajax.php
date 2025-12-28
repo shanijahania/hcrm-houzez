@@ -123,7 +123,9 @@ class HCRM_Ajax {
         // Parse form data
         $form_data = [];
         if ( isset( $_POST['settings'] ) ) {
-            parse_str( sanitize_text_field( wp_unslash( $_POST['settings'] ) ), $form_data );
+            // Note: Don't use sanitize_text_field() here as it corrupts URL-encoded characters
+            // Individual fields are sanitized after parsing (esc_url_raw for URLs, sanitize_text_field for text)
+            parse_str( wp_unslash( $_POST['settings'] ), $form_data );
         }
 
         // Update API settings (including auto_sync which was moved here)
@@ -770,5 +772,137 @@ class HCRM_Ajax {
         } else {
             wp_send_json_error(['message' => __('Failed to clear logs', 'hcrm-houzez')]);
         }
+    }
+
+    // =========================================================================
+    // CUSTOM FIELDS MAPPING METHODS
+    // =========================================================================
+
+    /**
+     * Get Houzez custom fields via AJAX.
+     */
+    public function get_houzez_custom_fields() {
+        check_ajax_referer( 'hcrm_admin_nonce', 'nonce' );
+
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_send_json_error( [ 'message' => __( 'Permission denied.', 'hcrm-houzez' ) ] );
+        }
+
+        try {
+            $fields = HCRM_Custom_Fields_Mapper::get_houzez_custom_fields();
+
+            wp_send_json_success( [
+                'fields' => $fields,
+            ] );
+        } catch ( Exception $e ) {
+            wp_send_json_error( [
+                'message' => $e->getMessage(),
+            ] );
+        }
+    }
+
+    /**
+     * Get CRM custom fields via AJAX.
+     */
+    public function get_crm_custom_fields() {
+        check_ajax_referer( 'hcrm_admin_nonce', 'nonce' );
+
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_send_json_error( [ 'message' => __( 'Permission denied.', 'hcrm-houzez' ) ] );
+        }
+
+        try {
+            $api_client = HCRM_API_Client::from_settings();
+
+            if ( ! $api_client->is_configured() ) {
+                wp_send_json_error( [
+                    'message' => __( 'API is not configured. Please set up the API connection first.', 'hcrm-houzez' ),
+                ] );
+            }
+
+            $response = $api_client->get_custom_fields( 'listing' );
+
+            if ( $response->is_success() ) {
+                // get_data() already returns the 'data' array from the API response
+                $fields = $response->get_data();
+
+                // Ensure we have an array
+                if ( ! is_array( $fields ) ) {
+                    $fields = [];
+                }
+
+                // Normalize the field structure.
+                $normalized = [];
+                foreach ( $fields as $field ) {
+                    $normalized[] = [
+                        'slug'  => $field['slug'] ?? '',
+                        'name'  => $field['name'] ?? '',
+                        'type'  => $field['fieldType'] ?? 'text',
+                    ];
+                }
+
+                wp_send_json_success( [
+                    'fields' => $normalized,
+                ] );
+            } else {
+                wp_send_json_error( [
+                    'message' => $response->get_message() ?: __( 'Failed to fetch CRM custom fields.', 'hcrm-houzez' ),
+                ] );
+            }
+        } catch ( Exception $e ) {
+            wp_send_json_error( [
+                'message' => $e->getMessage(),
+            ] );
+        }
+    }
+
+    /**
+     * Save custom fields mapping via AJAX.
+     */
+    public function save_custom_fields_mapping() {
+        check_ajax_referer( 'hcrm_admin_nonce', 'nonce' );
+
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_send_json_error( [ 'message' => __( 'Permission denied.', 'hcrm-houzez' ) ] );
+        }
+
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- JSON decoded and sanitized in mapper.
+        $mapping_json = isset( $_POST['mapping'] ) ? wp_unslash( $_POST['mapping'] ) : '[]';
+        $mapping      = json_decode( $mapping_json, true );
+
+        if ( json_last_error() !== JSON_ERROR_NONE ) {
+            wp_send_json_error( [
+                'message' => __( 'Invalid mapping data.', 'hcrm-houzez' ),
+            ] );
+        }
+
+        $result = HCRM_Custom_Fields_Mapper::save_mapping( $mapping );
+
+        if ( $result ) {
+            wp_send_json_success( [
+                'message' => __( 'Custom fields mapping saved successfully.', 'hcrm-houzez' ),
+                'count'   => HCRM_Custom_Fields_Mapper::get_mapped_count(),
+            ] );
+        } else {
+            wp_send_json_error( [
+                'message' => __( 'Failed to save custom fields mapping.', 'hcrm-houzez' ),
+            ] );
+        }
+    }
+
+    /**
+     * Get current custom fields mapping via AJAX.
+     */
+    public function get_custom_fields_mapping() {
+        check_ajax_referer( 'hcrm_admin_nonce', 'nonce' );
+
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_send_json_error( [ 'message' => __( 'Permission denied.', 'hcrm-houzez' ) ] );
+        }
+
+        wp_send_json_success( [
+            'mapping' => HCRM_Custom_Fields_Mapper::get_mapping(),
+            'count'   => HCRM_Custom_Fields_Mapper::get_mapped_count(),
+        ] );
     }
 }
